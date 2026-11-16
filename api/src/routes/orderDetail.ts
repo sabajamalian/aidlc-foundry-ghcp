@@ -37,7 +37,7 @@
  *             schema:
  *               $ref: '#/components/schemas/OrderDetail'
  *       400:
- *         description: Quantity must be a positive integer and productId must be valid
+ *         description: Invalid quantity or productId, or a line/order amount outside the supported currency range
  *       404:
  *         description: Product not found
  *
@@ -87,7 +87,7 @@
  *       404:
  *         description: Order detail or replacement product not found
  *       400:
- *         description: Quantity must be a positive integer and productId must be valid
+ *         description: Invalid quantity or productId, or a line/order amount outside the supported currency range
  *   delete:
  *     summary: Delete an order detail
  *     tags: [Order Details]

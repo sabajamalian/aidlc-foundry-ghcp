@@ -29,6 +29,15 @@ describe('catalog pricing', () => {
     expect(orderTotal([])).toBe(0);
   });
 
+  it('preserves large cent values and rounds decimal discount ties without epsilon', () => {
+    for (const price of [30_000_000_000_000, 30_000_000_000_000.01, 100_000_000_000.01]) {
+      expect(discountedUnitPrice(price, 0)).toBe(price);
+      expect(orderTotal([{ quantity: 1, unitPrice: price }])).toBe(price);
+    }
+    expect(discountedUnitPrice(0.05, 0.9)).toBe(0.01);
+    expect(discountedUnitPrice(1e-10, 0)).toBe(0);
+  });
+
   it('rejects non-finite line amounts and totals outside safe cents', () => {
     expect(() => orderTotal([{ quantity: 1, unitPrice: NaN }])).toThrow(ValidationError);
     expect(() => orderTotal([

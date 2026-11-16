@@ -99,6 +99,22 @@ describe('order pricing API', () => {
     expect(replaced.body.unitPrice).toBe(89.99);
   });
 
+  it('rejects unsupported amounts and serializes concurrent cumulative-total validation', async () => {
+    const overflow = await request(app).post('/order-details')
+      .send({ ...line, quantity: 1_000_000_000_000 });
+    expect(overflow.status).toBe(400);
+    const responses = await Promise.all([
+      request(app).post('/order-details').send({ ...line, quantity: 500_000_000_000 }),
+      request(app).post('/order-details').send({ ...line, quantity: 500_000_000_000 }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 400]);
+    const rows = await request(app).get('/order-details');
+    expect(rows.body).toHaveLength(1);
+    const total = await request(app).get('/orders/1');
+    expect(total.status).toBe(200);
+    expect(total.body.totalAmount).toBe(48_745_000_000_000);
+  });
+
   it('returns totals for single and list reads, including empty orders', async () => {
     await request(app).post('/order-details').send(line);
     await request(app).post('/order-details').send({ ...line, productId: 3, quantity: 1 });

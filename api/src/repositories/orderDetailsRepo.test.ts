@@ -82,6 +82,36 @@ describe('catalog-priced order lines', () => {
     expect((await details.update(created.orderDetailId, { productId: 3, unitPrice: 1 })).unitPrice).toBe(89.99);
     expect((await details.update(created.orderDetailId, { productId: 1 })).unitPrice).toBe(65);
   });
+
+  it('rejects unsupported line amounts before creating or changing quantities', async () => {
+    const created = await details.create(line);
+    await expect(details.create({ ...line, quantity: 1_000_000_000_000 }))
+      .rejects.toThrow(ValidationError);
+    await expect(details.update(created.orderDetailId, { quantity: 1_000_000_000_000 }))
+      .rejects.toThrow(ValidationError);
+    expect(await details.findAll()).toEqual([created]);
+    expect((await orders.findById(1))?.totalAmount).toBe(194.98);
+  });
+
+  it('rejects a product change that would overflow the stored line amount', async () => {
+    const created = await details.create({ ...line, productId: 3, quantity: 1_000_000_000_000 });
+    await expect(details.update(created.orderDetailId, { productId: 1 }))
+      .rejects.toThrow(ValidationError);
+    expect(await details.findById(created.orderDetailId)).toEqual(created);
+    expect((await orders.findById(1))?.totalAmount).toBe(89_990_000_000_000);
+  });
+
+  it('rejects cumulative overflow on create and moves without persisting either change', async () => {
+    const first = await details.create({ ...line, quantity: 500_000_000_000 });
+    await expect(details.create({ ...line, quantity: 500_000_000_000 }))
+      .rejects.toThrow(ValidationError);
+    const secondOrder = await orders.create({ ...order, name: 'Other order' });
+    const second = await details.create({ ...line, orderId: secondOrder.orderId, quantity: 500_000_000_000 });
+    await expect(details.update(second.orderDetailId, { orderId: 1 })).rejects.toThrow(ValidationError);
+    expect(await details.findAll()).toEqual([first, second]);
+    expect((await orders.findAll()).map((entry) => entry.totalAmount))
+      .toEqual([48_745_000_000_000, 48_745_000_000_000]);
+  });
 });
 
 describe('order totals', () => {

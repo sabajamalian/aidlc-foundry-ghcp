@@ -7,7 +7,6 @@ import { OrderDetail, OrderDetailInput } from '../models/orderDetail';
 import { handleDatabaseError, NotFoundError, ValidationError } from '../utils/errors';
 import { buildInsertSQL, buildUpdateSQL, objectToCamelCase, mapDatabaseRows, DatabaseRow } from '../utils/sql';
 import { discountedUnitPrice, orderTotal } from '../utils/pricing';
-import { ProductsRepository } from './productsRepo';
 
 export class OrderDetailsRepository {
   private db: DatabaseConnection;
@@ -49,22 +48,21 @@ export class OrderDetailsRepository {
     try {
       this.validateInput(orderDetail);
       this.validateQuantity(orderDetail.quantity);
-      const unitPrice = await this.catalogPrice(orderDetail.productId);
-      const { sql, values } = buildInsertSQL('order_details', {
-        orderId: orderDetail.orderId,
-        productId: orderDetail.productId,
-        quantity: orderDetail.quantity,
-        unitPrice,
-        notes: orderDetail.notes ?? '',
-      });
-      const result = await this.db.run(sql, values);
-
-      const createdOrderDetail = await this.findById(result.lastID || 0);
-      if (!createdOrderDetail) {
-        throw new Error('Failed to retrieve created order detail');
-      }
-
-      return createdOrderDetail;
+      return this.db.db.transaction(() => {
+        const fields = {
+          orderId: orderDetail.orderId,
+          productId: orderDetail.productId,
+          quantity: orderDetail.quantity,
+          unitPrice: this.catalogPrice(orderDetail.productId),
+          notes: orderDetail.notes ?? '',
+        };
+        this.validateOrderTotal(fields);
+        const { sql, values } = buildInsertSQL('order_details', fields);
+        const result = this.db.db.prepare(sql).run(...values);
+        const id = Number(result.lastInsertRowid);
+        if (!Number.isSafeInteger(id)) throw new ValidationError('Order detail ID is outside the supported range');
+        return this.storedLine(id);
+      }).immediate();
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -79,35 +77,26 @@ export class OrderDetailsRepository {
   ): Promise<OrderDetail> {
     try {
       this.validateInput(orderDetail);
-      const existing = await this.findById(id);
-      if (!existing) {
-        throw new NotFoundError('OrderDetail', id);
-      }
       if (orderDetail.quantity !== undefined) {
         this.validateQuantity(orderDetail.quantity);
       }
-      const fields: Record<string, unknown> = {};
-      for (const key of ['orderId', 'quantity', 'notes'] as const) {
-        if (orderDetail[key] !== undefined) fields[key] = orderDetail[key];
-      }
-      if (orderDetail.productId !== undefined && orderDetail.productId !== existing.productId) {
-        fields.unitPrice = await this.catalogPrice(orderDetail.productId);
-        fields.productId = orderDetail.productId;
-      }
-      if (Object.keys(fields).length === 0) return existing;
-      const { sql, values } = buildUpdateSQL('order_details', fields, 'order_detail_id = ?');
-      const result = await this.db.run(sql, [...values, id]);
-
-      if (result.changes === 0) {
-        throw new NotFoundError('OrderDetail', id);
-      }
-
-      const updatedOrderDetail = await this.findById(id);
-      if (!updatedOrderDetail) {
-        throw new Error('Failed to retrieve updated order detail');
-      }
-
-      return updatedOrderDetail;
+      return this.db.db.transaction(() => {
+        const existing = this.storedLine(id);
+        const fields = {
+          orderId: orderDetail.orderId === undefined ? existing.orderId : orderDetail.orderId,
+          productId: orderDetail.productId === undefined ? existing.productId : orderDetail.productId,
+          quantity: orderDetail.quantity === undefined ? existing.quantity : orderDetail.quantity,
+          notes: orderDetail.notes === undefined ? existing.notes : orderDetail.notes,
+          unitPrice: existing.unitPrice,
+        };
+        if (fields.productId !== existing.productId) {
+          fields.unitPrice = this.catalogPrice(fields.productId);
+        }
+        this.validateOrderTotal(fields, id);
+        const { sql, values } = buildUpdateSQL('order_details', fields, 'order_detail_id = ?');
+        this.db.db.prepare(sql).run(...values, id);
+        return this.storedLine(id);
+      }).immediate();
     } catch (error) {
       handleDatabaseError(error, 'OrderDetail', id);
     }
@@ -125,11 +114,35 @@ export class OrderDetailsRepository {
     }
   }
 
-  private async catalogPrice(productId: number): Promise<number> {
+  private storedLine(id: number): OrderDetail {
+    const row = this.db.db.prepare<[number], DatabaseRow>(
+      'SELECT * FROM order_details WHERE order_detail_id = ?',
+    ).get(id);
+    if (!row) throw new NotFoundError('OrderDetail', id);
+    return objectToCamelCase<OrderDetail>(row);
+  }
+
+  private validateOrderTotal(
+    line: Pick<OrderDetail, 'orderId' | 'quantity' | 'unitPrice'>,
+    excludeId: number | null = null,
+  ): void {
+    const rows = this.db.db.prepare<
+      [number, number | null, number | null],
+      { quantity: number; unitPrice: number }
+    >(
+      `SELECT quantity, unit_price AS unitPrice FROM order_details
+       WHERE order_id = ? AND (? IS NULL OR order_detail_id <> ?)`,
+    ).all(line.orderId, excludeId, excludeId);
+    orderTotal([...rows, line]);
+  }
+
+  private catalogPrice(productId: number): number {
     if (!Number.isSafeInteger(productId) || productId <= 0) {
       throw new ValidationError('Product ID must be a positive integer');
     }
-    const product = await new ProductsRepository(this.db).findById(productId);
+    const product = this.db.db.prepare<[number], { price: number; discount?: number }>(
+      'SELECT price, discount FROM products WHERE product_id = ?',
+    ).get(productId);
     if (!product) throw new NotFoundError('Product', productId);
     return discountedUnitPrice(product.price, product.discount);
   }
