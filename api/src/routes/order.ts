@@ -13,7 +13,7 @@
  *     tags: [Orders]
  *     responses:
  *       200:
- *         description: List of all orders
+ *         description: List of all orders, each with totalAmount computed from stored line prices
  *         content:
  *           application/json:
  *             schema:
@@ -50,7 +50,7 @@
  *         description: Order ID
  *     responses:
  *       200:
- *         description: Order found
+ *         description: Order found, including totalAmount (0 for an empty order)
  *         content:
  *           application/json:
  *             schema:
@@ -100,7 +100,7 @@
  */
 
 import express from 'express';
-import { Order } from '../models/order';
+import { OrderInput } from '../models/order';
 import { getOrdersRepository } from '../repositories/ordersRepo';
 import { handleDatabaseError, NotFoundError } from '../utils/errors';
 
@@ -110,7 +110,7 @@ const router = express.Router();
 router.post('/', async (req, res, next) => {
   try {
     const repo = await getOrdersRepository();
-    const newOrder = await repo.create(req.body as Omit<Order, 'orderId'>);
+    const newOrder = await repo.create(req.body as OrderInput);
     res.status(201).json(newOrder);
   } catch (error) {
     next(error);

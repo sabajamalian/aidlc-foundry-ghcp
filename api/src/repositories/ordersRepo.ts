@@ -3,9 +3,10 @@
  */
 
 import { getDatabase, DatabaseConnection } from '../db/sqlite';
-import { Order } from '../models/order';
+import { Order, OrderInput } from '../models/order';
 import { handleDatabaseError, NotFoundError } from '../utils/errors';
-import { buildInsertSQL, buildUpdateSQL, objectToCamelCase, mapDatabaseRows, DatabaseRow } from '../utils/sql';
+import { buildInsertSQL, buildUpdateSQL, objectToCamelCase, DatabaseRow } from '../utils/sql';
+import { orderTotal } from '../utils/pricing';
 
 export class OrdersRepository {
   private db: DatabaseConnection;
@@ -14,13 +15,55 @@ export class OrdersRepository {
     this.db = db;
   }
 
+  private async findWithTotals(
+    where: string = '',
+    params: unknown[] = [],
+    orderBy: string = 'o.order_id',
+  ): Promise<Order[]> {
+    const rows = await this.db.all<DatabaseRow & {
+      line_quantity: number | null;
+      line_unit_price: number | null;
+    }>(
+      `SELECT o.*, d.quantity AS line_quantity, d.unit_price AS line_unit_price
+       FROM orders o LEFT JOIN order_details d ON d.order_id = o.order_id
+       ${where} ORDER BY ${orderBy}, d.order_detail_id`,
+      params,
+    );
+    const grouped = new Map<number, {
+      order: Order;
+      lines: { quantity: number; unitPrice: number }[];
+    }>();
+    for (const { line_quantity, line_unit_price, ...fields } of rows) {
+      const order = objectToCamelCase<Omit<Order, 'totalAmount'>>(fields);
+      let group = grouped.get(order.orderId);
+      if (!group) {
+        group = { order: { ...order, totalAmount: 0 }, lines: [] };
+        grouped.set(order.orderId, group);
+      }
+      if (line_quantity !== null && line_unit_price !== null) {
+        group.lines.push({ quantity: line_quantity, unitPrice: line_unit_price });
+      }
+    }
+    return [...grouped.values()].map(({ order, lines }) => ({
+      ...order,
+      totalAmount: orderTotal(lines),
+    }));
+  }
+
+  private writableFields(order: Partial<OrderInput>): Record<string, unknown> {
+    const fields: Record<string, unknown> = {};
+    for (const key of ['branchId', 'orderDate', 'name', 'description', 'status'] as const) {
+      if (order[key] !== undefined) fields[key] = order[key];
+    }
+    return fields;
+  }
+
   /**
    * Get all orders
    */
   async findAll(): Promise<Order[]> {
     try {
-      const rows = await this.db.all<DatabaseRow>('SELECT * FROM orders ORDER BY order_id');
-      return mapDatabaseRows<Order>(rows);
+      return await this.findWithTotals();
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -31,8 +74,8 @@ export class OrdersRepository {
    */
   async findById(id: number): Promise<Order | null> {
     try {
-      const row = await this.db.get<DatabaseRow>('SELECT * FROM orders WHERE order_id = ?', [id]);
-      return row ? objectToCamelCase<Order>(row) : null;
+      const orders = await this.findWithTotals('WHERE o.order_id = ?', [id]);
+      return orders[0] ?? null;
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -41,9 +84,9 @@ export class OrdersRepository {
   /**
    * Create a new order
    */
-  async create(order: Omit<Order, 'orderId'>): Promise<Order> {
+  async create(order: OrderInput): Promise<Order> {
     try {
-      const { sql, values } = buildInsertSQL('orders', order);
+      const { sql, values } = buildInsertSQL('orders', this.writableFields(order));
       const result = await this.db.run(sql, values);
 
       const createdOrder = await this.findById(result.lastID || 0);
@@ -60,9 +103,15 @@ export class OrdersRepository {
   /**
    * Update order by ID
    */
-  async update(id: number, order: Partial<Omit<Order, 'orderId'>>): Promise<Order> {
+  async update(id: number, order: Partial<OrderInput>): Promise<Order> {
     try {
-      const { sql, values } = buildUpdateSQL('orders', order, 'order_id = ?');
+      const fields = this.writableFields(order);
+      if (Object.keys(fields).length === 0) {
+        const existing = await this.findById(id);
+        if (!existing) throw new NotFoundError('Order', id);
+        return existing;
+      }
+      const { sql, values } = buildUpdateSQL('orders', fields, 'order_id = ?');
       const result = await this.db.run(sql, [...values, id]);
 
       if (result.changes === 0) {
@@ -115,11 +164,7 @@ export class OrdersRepository {
    */
   async findByBranchId(branchId: number): Promise<Order[]> {
     try {
-      const rows = await this.db.all<DatabaseRow>(
-        'SELECT * FROM orders WHERE branch_id = ? ORDER BY order_date DESC',
-        [branchId],
-      );
-      return mapDatabaseRows<Order>(rows);
+      return await this.findWithTotals('WHERE o.branch_id = ?', [branchId], 'o.order_date DESC');
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -130,11 +175,7 @@ export class OrdersRepository {
    */
   async findByStatus(status: string): Promise<Order[]> {
     try {
-      const rows = await this.db.all<DatabaseRow>(
-        'SELECT * FROM orders WHERE status = ? ORDER BY order_date DESC',
-        [status],
-      );
-      return mapDatabaseRows<Order>(rows);
+      return await this.findWithTotals('WHERE o.status = ?', [status], 'o.order_date DESC');
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -145,11 +186,10 @@ export class OrdersRepository {
    */
   async findByDateRange(startDate: string, endDate: string): Promise<Order[]> {
     try {
-      const rows = await this.db.all<DatabaseRow>(
-        'SELECT * FROM orders WHERE order_date >= ? AND order_date <= ? ORDER BY order_date DESC',
-        [startDate, endDate],
+      return await this.findWithTotals(
+        'WHERE o.order_date >= ? AND o.order_date <= ?',
+        [startDate, endDate], 'o.order_date DESC',
       );
-      return mapDatabaseRows<Order>(rows);
     } catch (error) {
       handleDatabaseError(error);
     }

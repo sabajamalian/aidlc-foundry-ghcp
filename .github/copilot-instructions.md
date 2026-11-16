@@ -22,6 +22,26 @@ Work moves through human-approved stages. Respect the stage you were started in:
 2. **Plan** (`docs/plans/*.md`): written by the planner agent and approved by a human through a plan-only PR. A merged plan is the approved scope.
 3. **Implementation**: done by the implementer agent against a specific plan commit, then checked by CI, Copilot code review, and the Foundry policy check.
 
+### Exception: draft implementation before plan approval
+
+When the user explicitly requests an implementation PR before the plan is approved
+and merged, proceed with a **draft** PR. That request authorizes implementation
+and review against the proposed scope; it does not approve the plan or authorize
+merging. Do not require a separate plan approval to start this draft work.
+
+- Use the linked proposal's acceptance criteria and pin the proposed plan's exact
+  file path and commit SHA. Do not broaden the scope.
+- State in the PR that the plan is unapproved, link its PR, and keep the
+  implementation draft and not merge-ready.
+- Request Copilot code review and run the existing Foundry policy check on the
+  draft. Verify that Foundry evaluated applicable code, not just that a workflow
+  succeeded. Report unavailable judgments honestly.
+- Leave plan-guard enabled. An expected failure for an unmerged plan must be
+  disclosed, not bypassed or described as a pass.
+- Before marking the implementation ready, obtain plan approval and merge,
+  rebind the implementation to the merged plan revision, reconcile any scope
+  changes, and rerun checks. Neither PR may be merged on the basis of this exception.
+
 Never change acceptance criteria, approved plans, `.github/policies/**`, or `.github/workflows/**` to make a check pass. If the plan is wrong or incomplete, stop and say so in the PR instead of silently widening scope.
 
 ## Build and test

@@ -8,6 +8,7 @@
  *         - orderId
  *         - branchId
  *         - orderDate
+ *         - totalAmount
  *       properties:
  *         orderId:
  *           type: integer
@@ -26,7 +27,8 @@
  *         totalAmount:
  *           type: number
  *           format: float
- *           description: The total amount of the order
+ *           readOnly: true
+ *           description: Sum of rounded line amounts using stored prices, or 0 for an empty order
  */
 export interface Order {
   orderId: number;
@@ -35,4 +37,7 @@ export interface Order {
   name: string;
   description: string;
   status: string;
+  totalAmount: number;
 }
+
+export type OrderInput = Omit<Order, 'orderId' | 'totalAmount'>;
