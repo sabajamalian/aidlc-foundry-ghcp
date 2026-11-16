@@ -150,6 +150,27 @@ class PolicyEvaluationTests(unittest.TestCase):
         report = evaluate(self.policy, self.files, client(fake_transport([(200, {"answers": {}})])))
         self.assertTrue(any(f.outcome == "not_evaluated" for f in report.findings))
 
+    def test_report_shows_every_standard_including_clean_and_inapplicable_rules(self):
+        diff = parse_diff("""\
+diff --git a/api/src/routes/order.ts b/api/src/routes/order.ts
+--- a/api/src/routes/order.ts
++++ b/api/src/routes/order.ts
+@@ -1 +1 @@
+-const old = true;
++const result = await repo.findById(id);
+""")
+        answers = {"answers": {key: {"choice": "compliant", "probabilities": {"compliant": 0.97}}
+                               for key in ("sec_001", "money_001", "api_002", "api_003")}}
+        report = evaluate(self.policy, diff, client(fake_transport([(200, answers)])))
+        self.assertEqual(report.status, "pass")
+        rendered = render_markdown(report)
+        for rule in self.policy["rules"]:
+            self.assertIn(f"| {rule['id']} ", rendered)
+        outcomes = {f.rule_id: f.outcome for f in report.findings}
+        self.assertEqual(outcomes["LOG-001"], "compliant")
+        self.assertEqual(outcomes["DB-001"], "not_applicable")
+        self.assertIn("0.97", rendered)
+
 
 class DecisionClientTests(unittest.TestCase):
     def test_retries_429_then_succeeds(self):

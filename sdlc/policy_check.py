@@ -234,6 +234,9 @@ def evaluate(policy: dict, files: List[FileDiff], client: Optional[DecisionClien
                     findings.append(Finding(r["id"], r["title"], "pattern", r["enforcement"], fd.path,
                                             f"file {fd.status}", first, "violation", blocking, None,
                                             r.get("message", "").strip()))
+                else:
+                    findings.append(Finding(r["id"], r["title"], "pattern", r["enforcement"], fd.path,
+                                            "", None, "compliant", message="New migration; no historical file changed."))
                 continue
             rx = re.compile(r["pattern"])
             hits = [n for n, t in fd.added if rx.search(t)]
@@ -241,6 +244,9 @@ def evaluate(policy: dict, files: List[FileDiff], client: Optional[DecisionClien
                 findings.append(Finding(r["id"], r["title"], "pattern", r["enforcement"], fd.path,
                                         line_ranges(hits), hits[0], "violation", blocking, None,
                                         r.get("message", "").strip()))
+            else:
+                findings.append(Finding(r["id"], r["title"], "pattern", r["enforcement"], fd.path,
+                                        "", None, "compliant", message="No matching added lines."))
 
     # Decision rules, batched: one request per file with every applicable rule as a question
     decision_rules = [r for r in rules if r["kind"] == "decision"]
@@ -296,6 +302,11 @@ def evaluate(policy: dict, files: List[FileDiff], client: Optional[DecisionClien
                                     outcome, blocking,
                                     a.violation_probability if outcome == "violation" else a.probability, msg))
 
+    for r in rules:
+        if not any(f.rule_id == r["id"] for f in findings):
+            findings.append(Finding(r["id"], r["title"], r["kind"], r["enforcement"],
+                                    "(no applicable changed lines)", "", None, "not_applicable"))
+
     if decision_rules and broken:
         notes.append(f"Microsoft-Decision unavailable: {broken}")
     if any(f.blocking for f in findings):
@@ -324,20 +335,17 @@ def render_markdown(report: Report, base_sha: str = "") -> str:
         out.append(f"> {n}")
     if report.notes:
         out.append("")
-    reportable = [f for f in report.findings if f.outcome not in ("compliant", "not_applicable")]
+    reportable = report.findings
     if not reportable:
         out.append("No findings.")
     else:
-        out += ["| Rule | Mode | File | Lines | Outcome | Confidence | Note |",
+        out += ["| Rule | Mode | File | Lines | Outcome | Choice probability | Note |",
                 "|------|------|------|-------|---------|------------|------|"]
         for f in sorted(reportable, key=lambda f: (not f.blocking, f.rule_id, f.path)):
             mode = f"{f.enforcement}{' (blocking hit)' if f.blocking else ''}"
             conf = f"{f.probability:.2f}" if f.probability is not None else "n/a"
             note = f.message.replace("|", "\\|").replace("\n", " ")
             out.append(f"| {f.rule_id} {f.title} | {mode} | `{f.path}` | {f.lines} | {f.outcome} | {conf} | {note} |")
-    passed = sorted({f.rule_id for f in report.findings if f.outcome in ("compliant", "not_applicable")})
-    if passed:
-        out += ["", f"Compliant or not applicable: {', '.join(passed)}."]
     out += ["", "_Line evidence comes from the diff, not the model. Decision rules are advisory until "
                 "validated on labeled examples. Rules live in `.github/policies/team-standards.yml`._"]
     return "\n".join(out) + "\n"

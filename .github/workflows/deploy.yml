@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: inputs.api_base_url == ''
+    if: vars.DEPLOY_ENABLED == 'true' && inputs.api_base_url == ''
     runs-on: ubuntu-latest
     environment: production   # configure required reviewers on this environment
     outputs:

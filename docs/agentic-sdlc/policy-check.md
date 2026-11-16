@@ -9,7 +9,7 @@ The Copilot code review agent reviews PRs for general quality. The Foundry polic
 3. **Pattern rules** run as regexes. No model call. Same input, same result.
 4. **Decision rules** go to Microsoft-Decision on Foundry. For each changed file, one request carries one `choice` question per applicable rule, with options `violation`, `compliant`, `not_applicable`, `cannot_tell`. The model gets the added hunk and the rule text, and picks an option. File and line numbers come from the diff, never from the model. Calls are capped by `decision.max_calls`.
 5. The result is PASS (exit 0), FAIL (exit 1, a blocking rule hit), or UNAVAILABLE (exit 2, Decision couldn't be reached or answered, and no blocking hit was found). UNAVAILABLE is reported as a warning, never as a pass.
-6. The report goes to the job summary, a single PR comment (updated in place), inline annotations, and a JSON artifact.
+6. The report goes to the job summary, a single PR comment (updated in place), inline annotations, and a JSON artifact. Its table includes every team standard, including compliant and not-applicable results. Choice probabilities describe model judgments, not guarantees of correctness.
 
 Microsoft-Decision fits here because each question is bounded: one rule, one excerpt, a fixed set of answers. It isn't asked to find problems in general or to write fixes. That's Copilot's job.
 

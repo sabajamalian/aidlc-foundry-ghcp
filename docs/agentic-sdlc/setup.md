@@ -26,6 +26,8 @@ The discovery runner creates or updates a prompt agent named `octocat-discovery`
 
 You need a resource group, an Azure Container Registry with the admin user enabled (the bicep uses registry credentials), and a Container Apps environment. [`infra/container-apps.bicep`](../../infra/container-apps.bicep) creates the two apps.
 
+Deployment is opt-in: set `DEPLOY_ENABLED=true` only after configuring the target, deployment identity, and production reviewers. The policy-check identity needs inference access only; don't grant it deployment permissions just to run this demo.
+
 ## 4. Repository variables and secrets
 
 | Name | Kind | Used by |
@@ -38,6 +40,7 @@ You need a resource group, an Azure Container Registry with the admin user enabl
 | `POLICY_UNAVAILABLE_FAILS` | variable, optional | set `true` to fail the check when Decision is down |
 | `REPAIR_MAX_ATTEMPTS` | variable, optional | repair loop bound, default 3 |
 | `AZURE_RESOURCE_GROUP`, `ACR_NAME`, `ACA_ENVIRONMENT_ID`, `DEMO_INSTANCE_NAME` | variable | deploy |
+| `DEPLOY_ENABLED` | variable, optional | `true` enables deployment; unset skips deployment |
 | `COPILOT_ASSIGN_TOKEN` | secret | assigning Copilot and posting `@copilot` repair comments |
 
 `COPILOT_ASSIGN_TOKEN` must be a user token (fine-grained PAT with read and write on issues and pull requests, or a classic PAT with `repo`) from someone with write access and a Copilot coding agent seat. `GITHUB_TOKEN` can't assign Copilot, and Copilot ignores `@copilot` mentions from bots. Without this secret the workflows still run and post instructions for doing those steps by hand.
