@@ -8,7 +8,7 @@ title: "Catalog-priced order lines and visible order totals"
 
 ## 1. Summary
 
-Derive new order-line prices from the product catalog on the server, snapshot the discounted unit price, and include totals in order responses. GitHub issue [#1](https://github.com/sabajamalian/aidlc-foundry-ghcp/issues/1) is the temporary proposal mirror. Jira publication is pending; no Jira ticket key or approval is implied.
+Derive new order-line prices from the product catalog on the server, snapshot the discounted unit price, and include totals in order responses. The feature is tracked in [KAN-1](https://saba-demo-project.atlassian.net/jira/browse/KAN-1) and mirrored in GitHub issue [#1](https://github.com/sabajamalian/aidlc-foundry-ghcp/issues/1). The ticket does not imply plan approval.
 
 **Human gate:** this plan is proposed, not approved. A draft implementation can be inspected as a demo preview, but must not be merged until a human approves and merges this plan. Rebind the implementation PR to the resulting main-branch plan commit before requesting final approval.
 
@@ -86,4 +86,4 @@ UI changes, tax, shipping, currencies, refunds, historical repricing, schema cha
 
 ## 10. Open questions for the reviewer
 
-Confirm that ignoring client unitPrice, rejecting non-positive or fractional quantities, and preserving historical prices on quantity-only updates match the intended product contract. Publish and link the Jira ticket and mock research before treating this as the final approved proposal.
+Confirm that ignoring client unitPrice, rejecting non-positive or fractional quantities, and preserving historical prices on quantity-only updates match the intended product contract. Post the mock research to KAN-1 before treating this as the final approved proposal.
