@@ -1,0 +1,32 @@
+{
+  "title": "Apply catalog discounts to order lines and return order totals",
+  "problem": "Branches order discounted products at list price. The catalog shows SmartFeeder One and AutoClean Litter Dome at 25% off and WhiskerCam Pro at 15% off, but order lines are billed at list price, and branches can't see an order total to reconcile against invoices.",
+  "evidence": [
+    {"source": "order-lines-export.csv rows 9001, 9002, 9003, 9005", "detail": "Billed unit price equals catalog list price for discounted products; total variance $852.50 across four orders."},
+    {"source": "SUP-1041, SUP-1043, SUP-1047, SUP-1058", "detail": "Billing tickets reporting discount not applied ($390.00, $200.00, $67.50, $195.00)."},
+    {"source": "SUP-1055", "detail": "Unit price on the order line was typed manually and did not match the catalog."},
+    {"source": "SUP-1052, SUP-1061, platform team note", "detail": "Order responses have no total; Swagger documents totalAmount but it is never returned."}
+  ],
+  "desired_outcome": "The system, not the requester, sets the unit price of every order line from the catalog price and discount, rounded to cents, and every order returned by the API includes its total.",
+  "acceptance_criteria": [
+    {"id": "AC-1", "given": "product 1 (SmartFeeder One) has price 129.99 and discount 0.25", "when": "an order line is created for it with quantity 2", "then": "the stored and returned unitPrice is 97.49"},
+    {"id": "AC-2", "given": "an order line request includes a unitPrice that differs from the catalog-derived price", "when": "the line is created", "then": "the catalog-derived unitPrice is used and the supplied value is ignored"},
+    {"id": "AC-3", "given": "product 3 (CatFlix Entertainment Portal) has discount 0", "when": "an order line is created for it", "then": "the unitPrice is the list price 89.99"},
+    {"id": "AC-4", "given": "an order with lines 2 x SmartFeeder One and 1 x CatFlix Entertainment Portal", "when": "the order is fetched with GET /api/orders/{id}", "then": "the response includes totalAmount 284.97"},
+    {"id": "AC-5", "given": "an order line request for a product id that does not exist", "when": "the line is created", "then": "the API responds 404 and no line is stored"}
+  ],
+  "out_of_scope": [
+    "Re-pricing or refunding historical orders 9001 to 9005 (finance will handle credits separately)",
+    "Dark mode for the order screen (SUP-1064)",
+    "Tax, shipping, and currency conversion"
+  ],
+  "risks": [
+    "Existing API clients may send unitPrice and rely on it being stored.",
+    "Discount changes after an order is placed must not change existing order lines."
+  ],
+  "open_questions": [
+    "Should the discount be captured on the order line for audit, or only the resulting unit price?",
+    "Should totalAmount appear on GET /api/orders (list) as well as GET /api/orders/{id}?"
+  ],
+  "confidence": "high"
+}

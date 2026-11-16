@@ -1,0 +1,129 @@
+# Team coding standards and policies for OctoCAT Supply.
+#
+# Read by sdlc/policy_check.py in the "Foundry policy check" workflow. The workflow
+# always loads this file from the PR's BASE commit, so a PR can't relax the rules
+# it is judged against.
+#
+# kind: pattern   deterministic regex over ADDED lines only. No model call.
+# kind: decision  per-rule judgment by Microsoft-Decision on Foundry. The model
+#                 sees the added hunk for one file and picks one option. File and
+#                 line evidence is computed from the diff, never from the model.
+#
+# enforcement: advisory  reported, never fails the check.
+#              blocking  fails the check when the violation probability (if the
+#                        API returns one) is >= threshold, or when the chosen
+#                        option is "violation" and no probability is returned.
+#
+# Every decision rule starts advisory. Promote a rule to blocking only after it
+# has been validated against labeled examples (see docs/agentic-sdlc/policy-check.md).
+version: 1
+
+decision:
+  max_calls: 25          # hard cap on Decision API calls per PR
+  default_threshold: 0.8
+  # Options offered to the model for every decision rule. "cannot_tell" lets the
+  # model abstain instead of guessing.
+  options:
+    violation: "The added code clearly breaks the rule."
+    compliant: "The added code follows the rule."
+    not_applicable: "The added code does nothing the rule is about."
+    cannot_tell: "The excerpt is not enough to decide."
+
+rules:
+  # ---------------------------------------------------------------- deterministic
+  - id: LOG-001
+    title: No console.log in API source
+    kind: pattern
+    enforcement: blocking
+    applies_to: ["api/src/**/*.ts"]
+    exclude: ["api/src/**/*.test.ts"]
+    pattern: '\bconsole\.log\s*\('
+    message: >-
+      Remove console.log from API code. Log through the error middleware or return
+      the value; debug output in routes leaks request data into container logs.
+
+  - id: SEC-002
+    title: No hard-coded secrets
+    kind: pattern
+    enforcement: blocking
+    applies_to: ["**/*"]
+    exclude: ["**/*.md", ".github/policies/**", "sdlc/tests/**"]
+    pattern: '(?i)(api[_-]?key|secret|password|connection[_-]?string)\s*[:=]\s*["''][^"''\s]{8,}["'']'
+    message: Load credentials from environment variables or Key Vault, never from source.
+
+  - id: DB-001
+    title: Migrations are append-only
+    kind: pattern
+    enforcement: blocking
+    applies_to: ["api/database/migrations/**"]
+    when: modified_or_deleted   # adding a new migration file is fine
+    message: >-
+      Existing migrations have already run in production. Add a new numbered
+      migration instead of editing or deleting one.
+
+  - id: TS-001
+    title: No explicit any
+    kind: pattern
+    enforcement: advisory
+    applies_to: ["api/src/**/*.ts", "frontend/src/**/*.ts", "frontend/src/**/*.tsx"]
+    exclude: ["**/*.test.ts"]
+    pattern: ':\s*any\b|<any>|as any\b'
+    message: Use a concrete type or `unknown` with narrowing.
+
+  # ---------------------------------------------------------------- Microsoft-Decision
+  - id: SEC-001
+    title: Parameterized SQL only
+    kind: decision
+    enforcement: advisory
+    threshold: 0.85
+    applies_to: ["api/src/**/*.ts"]
+    exclude: ["api/src/**/*.test.ts"]
+    instructions: >-
+      Team rule: SQL must be executed with placeholder parameters (?) and a values
+      array. Building SQL text by concatenating or interpolating request values,
+      ids, or other variables is a violation. Interpolating constant column or table
+      names chosen in code is allowed. Does the added code follow this rule?
+
+  - id: MONEY-001
+    title: Money math goes through the shared pricing helper
+    kind: decision
+    enforcement: advisory
+    threshold: 0.8
+    applies_to: ["api/src/**/*.ts", "frontend/src/**/*.ts", "frontend/src/**/*.tsx"]
+    exclude: ["**/*.test.ts"]
+    instructions: >-
+      Team rule: prices, discounts, and order totals are computed by one shared
+      helper in api/src/utils, which rounds each line amount to cents once. Inline
+      price or discount arithmetic in routes, repositories, or React components,
+      floating-point totals without rounding to 2 decimals, or recomputing
+      discounts in the frontend are violations. Calling the shared helper, or
+      displaying a value the API already returned, is compliant. Does the added
+      code follow this rule?
+
+  - id: API-002
+    title: Errors use shared error types
+    kind: decision
+    enforcement: advisory
+    threshold: 0.8
+    applies_to: ["api/src/routes/**/*.ts", "api/src/repositories/**/*.ts"]
+    exclude: ["**/*.test.ts"]
+    instructions: >-
+      Team rule: route handlers and repositories signal failures by throwing or
+      passing the error classes from api/src/utils/errors.ts (NotFoundError,
+      ValidationError, ConflictError) to next(), and the error middleware sets the
+      status. Writing ad hoc res.status(4xx/5xx).send(...) or .json({error}) for
+      failures in new code is a violation. Does the added code follow this rule?
+
+  - id: API-003
+    title: Swagger documents response changes
+    kind: decision
+    enforcement: advisory
+    threshold: 0.8
+    applies_to: ["api/src/routes/**/*.ts", "api/src/models/**/*.ts"]
+    exclude: ["**/*.test.ts"]
+    instructions: >-
+      Team rule: when an API response shape changes (fields added, removed, or
+      renamed in a model or route response), the @swagger JSDoc for that schema or
+      route is updated in the same change. A model or response change without a
+      matching @swagger update in the shown diff is a violation. Does the added
+      code follow this rule?

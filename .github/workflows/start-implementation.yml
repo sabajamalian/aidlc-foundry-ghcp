@@ -1,0 +1,106 @@
+# Stage 3 gate: merging a plan PR with a human approval is plan approval.
+# Automation pins the plan path and merge SHA in a new implementation issue and
+# assigns the Copilot coding agent with the `implementer` custom agent.
+name: Start implementation
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths: ["docs/plans/proposal-*.md"]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  start:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Find the approved plan
+        id: plan
+        run: |
+          path=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '[.[] | select(.status != "removed") | .filename | select(test("^docs/plans/proposal-[0-9]+-.*\\.md$"))][0]')
+          [ -n "$path" ] && [ "$path" != "null" ] || { echo "::error::no plan file in PR"; exit 1; }
+          proposal=$(echo "$path" | sed -E 's#^docs/plans/proposal-([0-9]+)-.*#\1#')
+          title=$(python3 -c "import re,sys,yaml; t=open(sys.argv[1]).read(); m=re.match(r'^---\s*\n(.*?)\n---', t, re.S); print((yaml.safe_load(m.group(1)) or {}).get('title',''))" "$path")
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "proposal=$proposal" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Require a human approval on the plan PR
+        id: approval
+        run: |
+          approvers=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
+            --jq '.[] | select(.state == "APPROVED" and .user.type == "User") | .user.login' | sort -u)
+          ok=""
+          for u in $approvers; do
+            perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$u/permission" --jq .permission)
+            [[ "$perm" =~ ^(admin|maintain|write)$ ]] && ok="$ok @$u"
+          done
+          if [ -z "$ok" ]; then
+            gh pr comment "$PR" --body "This plan was merged without an approving review from a human with write access, so implementation was **not** started. Approve it in a follow-up PR, or protect \`main\` with required reviews."
+            gh issue edit "${{ steps.plan.outputs.proposal }}" --add-label needs-human || true
+            exit 1
+          fi
+          echo "approvers=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Create the implementation issue
+        id: issue
+        env:
+          PLAN: ${{ steps.plan.outputs.path }}
+          PROPOSAL: ${{ steps.plan.outputs.proposal }}
+          TITLE: ${{ steps.plan.outputs.title }}
+          APPROVERS: ${{ steps.approval.outputs.approvers }}
+        run: |
+          cat > impl.md <<EOF
+          Implement the approved plan for proposal #$PROPOSAL.
+
+          | | |
+          |---|---|
+          | Proposal | #$PROPOSAL |
+          | Approved plan | [\`$PLAN\`](../blob/$MERGE_SHA/$PLAN) |
+          | Plan revision | \`$MERGE_SHA\` |
+          | Plan PR | #$PR, approved by$APPROVERS |
+
+          Read the plan at the pinned revision: \`git show $MERGE_SHA:$PLAN\`.
+
+          Your PR body must contain these lines so the plan guard can verify the binding:
+          \`\`\`
+          Proposal: #$PROPOSAL
+          Plan: $PLAN@$MERGE_SHA
+          \`\`\`
+
+          Definition of done: plan steps complete, tests added, \`acceptance/proposal-$PROPOSAL.mjs\` encodes every acceptance criterion, and CI, Copilot code review, and the Foundry policy check are addressed.
+          EOF
+          url=$(gh issue create --title "Implement: ${TITLE:-proposal #$PROPOSAL}" --body-file impl.md --label implementing)
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          gh issue edit "$PROPOSAL" --add-label implementing --remove-label planning
+          gh issue comment "$PROPOSAL" --body "Plan approved by$APPROVERS and pinned at \`${MERGE_SHA:0:12}\`. Implementation tracked in $url."
+
+      - name: Assign Copilot (implementer)
+        env:
+          COPILOT_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          N: ${{ steps.issue.outputs.number }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -z "$COPILOT_TOKEN" ]; then
+            gh issue comment "$N" --body "Set \`COPILOT_ASSIGN_TOKEN\` to auto-assign, or assign Copilot here and pick the **implementer** agent."
+            echo "::warning::COPILOT_ASSIGN_TOKEN is not set"; exit 0
+          fi
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg base "$BASE" '{
+            assignees: ["copilot-swe-agent[bot]"],
+            agent_assignment: { target_repo: $repo, base_branch: $base, custom_agent: "implementer",
+              custom_instructions: "Follow the pinned plan exactly. Include the Proposal and Plan lines from this issue in the PR body." }
+          }' > payload.json
+          GH_TOKEN="$COPILOT_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$N/assignees" --input payload.json --jq '.assignees[].login'

@@ -1,0 +1,14 @@
+diff --git a/api/src/routes/orderDetail.ts b/api/src/routes/orderDetail.ts
+index 1111111..2222222 100644
+--- a/api/src/routes/orderDetail.ts
++++ b/api/src/routes/orderDetail.ts
+@@ -120,6 +120,12 @@ router.post('/', async (req, res, next) => {
+   try {
+     const repo = await getOrderDetailsRepository();
++    const product = await getProductsRepository().then((r) => r.findById(req.body.productId));
++    console.log('pricing order line', req.body);
++    const unitPrice: any = product!.price * (1 - product!.discount);
++    req.body.unitPrice = unitPrice;
+     const newDetail = await repo.create(req.body);
+     res.status(201).json(newDetail);
+   } catch (error) {

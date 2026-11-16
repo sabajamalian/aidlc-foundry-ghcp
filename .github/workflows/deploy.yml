@@ -1,0 +1,122 @@
+# Final stage: deploy behind a human-approved environment, then verify each in-flight
+# proposal's acceptance criteria against the live API and report evidence to the PM.
+name: Deploy and verify
+
+on:
+  push:
+    branches: [main]
+    paths: ["api/**", "frontend/**", "infra/**", "acceptance/**"]
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: Skip deployment and only verify against this API URL
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: inputs.api_base_url == ''
+    runs-on: ubuntu-latest
+    environment: production   # configure required reviewers on this environment
+    outputs:
+      api_url: ${{ steps.bicep.outputs.api_url }}
+      frontend_url: ${{ steps.bicep.outputs.frontend_url }}
+    env:
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      ACR: ${{ vars.ACR_NAME }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build images in ACR
+        run: |
+          az acr build -r "$ACR" -t "octocat-api:$TAG" api --no-logs
+          az acr build -r "$ACR" -t "octocat-frontend:$TAG" frontend --no-logs
+
+      - name: Deploy Container Apps
+        id: bicep
+        env:
+          ENV_ID: ${{ vars.ACA_ENVIRONMENT_ID }}
+          INSTANCE: ${{ vars.DEMO_INSTANCE_NAME || 'octocat-sdlc' }}
+        run: |
+          server=$(az acr show -n "$ACR" --query loginServer -o tsv)
+          user=$(az acr credential show -n "$ACR" --query username -o tsv)
+          pass=$(az acr credential show -n "$ACR" --query 'passwords[0].value' -o tsv)
+          echo "::add-mask::$pass"
+          az deployment group create -g "$RG" -n "octocat-$GITHUB_RUN_ID" -f infra/container-apps.bicep \
+            -p demoInstanceName="$INSTANCE" demoSlug="$INSTANCE" \
+               apiImage="$server/octocat-api:$TAG" frontendImage="$server/octocat-frontend:$TAG" \
+               containerAppsEnvironmentId="$ENV_ID" containerRegistryUrl="$server" \
+               containerRegistryUsername="$user" containerRegistryPassword="$pass" \
+            --query properties.outputs -o json > outputs.json
+          echo "api_url=$(jq -r .apiUrl.value outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "frontend_url=$(jq -r .frontendUrl.value outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "Deployed $(jq -r .frontendUrl.value outputs.json)" >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: deploy
+    if: always() && (needs.deploy.result == 'success' || inputs.api_base_url != '')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      API_BASE_URL: ${{ inputs.api_base_url || needs.deploy.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Wait for the API
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS "$API_BASE_URL/api/products" >/dev/null && exit 0
+            sleep 10
+          done
+          echo "::error::API at $API_BASE_URL did not become healthy"; exit 1
+
+      - name: Run acceptance checks and report to the PM
+        run: |
+          found=0
+          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label proposal --label implementing --state open --json number --jq '.[].number'); do
+            check="acceptance/proposal-$n.mjs"
+            if [ ! -f "$check" ]; then
+              echo "Proposal #$n has no $check yet (implementation not merged)."; continue
+            fi
+            found=1
+            set +e
+            node "$check" > "evidence-$n.md" 2>&1
+            code=$?
+            set -e
+            {
+              echo "<!-- acceptance-evidence -->"
+              echo "### Acceptance evidence for #$n"
+              echo
+              echo "Deployed commit \`${GITHUB_SHA:0:12}\`, API \`$API_BASE_URL\`, [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+              echo
+              cat "evidence-$n.md"
+            } > "comment-$n.md"
+            cat "comment-$n.md" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$code" = "0" ]; then
+              gh issue comment "$n" --body-file "comment-$n.md"
+              gh issue comment "$n" --body "All acceptance criteria pass in production. PM: review the evidence above and reopen if anything is off."
+              gh issue edit "$n" --add-label verified --remove-label implementing
+              gh issue close "$n" --reason completed
+            else
+              gh issue comment "$n" --body-file "comment-$n.md"
+              gh issue edit "$n" --add-label verification-failed --add-label needs-human
+            fi
+          done
+          [ "$found" = "1" ] || echo "No in-flight proposals with acceptance checks." >> "$GITHUB_STEP_SUMMARY"

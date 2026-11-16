@@ -1,0 +1,50 @@
+# Enforces the plan gate on every PR:
+#  - a PR that adds or edits docs/plans/proposal-*.md must change only that file and be a valid plan
+#  - an implementation PR ("Proposal: #N") must be bound to an approved plan revision
+# Runs the guard from the BASE commit; PR content is fetched as data only.
+name: Plan guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan-guard:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      - name: Plan-only PR rules
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '[.[] | {filename, status}]' | jq -s add > changed.json
+          args=()
+          for p in $(jq -r '.[] | select(.status != "removed") | .filename | select(startswith("docs/plans/proposal-"))' changed.json); do
+            f="plan-$(echo "$p" | tr '/' '_')"
+            gh api -H "Accept: application/vnd.github.raw" "repos/$HEAD_REPO/contents/$p?ref=$HEAD_SHA" > "$f"
+            args+=(--plan "$p=$f")
+          done
+          python -m sdlc.plan_guard check-pr --changed changed.json "${args[@]}"
+
+      - name: Implementation PR is bound to an approved plan
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$BODY" > body.md
+          python -m sdlc.plan_guard check-binding --body body.md --base-ref "origin/$BASE_REF"

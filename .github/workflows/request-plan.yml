@@ -1,0 +1,57 @@
+# Stage 2 gate: a product manager approves a proposal by adding `pm-approved`.
+# Automation verifies who approved, snapshots the approved text, and assigns the
+# Copilot coding agent with the `planner` custom agent.
+name: Request plan
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  assign-planner:
+    if: github.event.label.name == 'pm-approved' && contains(github.event.issue.labels.*.name, 'proposal')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SENDER: ${{ github.event.sender.login }}
+      SENDER_TYPE: ${{ github.event.sender.type }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - name: Verify the approver
+        run: |
+          perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" --jq .permission)
+          if [ "$SENDER_TYPE" = "Bot" ] || ! [[ "$perm" =~ ^(admin|maintain|write)$ ]]; then
+            gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label pm-approved
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Removed \`pm-approved\`: only a human with write access can approve a proposal."
+            exit 1
+          fi
+
+      - name: Record the approved proposal
+        run: |
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json body --jq .body > body.md
+          digest=$(sha256sum body.md | cut -c1-16)
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "<!-- pm-approval:$digest -->
+          **Approved by @$SENDER** at $(date -u +%Y-%m-%dT%H:%M:%SZ). Proposal text digest \`$digest\`.
+          The Copilot **planner** agent is drafting a plan-only PR. Edits to this issue after now aren't part of the approval; remove and re-add \`pm-approved\` to re-approve."
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label planning --remove-label needs-pm-review
+
+      - name: Assign Copilot (planner)
+        env:
+          COPILOT_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -z "$COPILOT_TOKEN" ]; then
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Set the \`COPILOT_ASSIGN_TOKEN\` secret to auto-assign Copilot, or assign Copilot to this issue manually and pick the **planner** agent."
+            echo "::warning::COPILOT_ASSIGN_TOKEN is not set"; exit 0
+          fi
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg base "$BASE" --arg n "$ISSUE" '{
+            assignees: ["copilot-swe-agent[bot]"],
+            agent_assignment: {
+              target_repo: $repo, base_branch: $base, custom_agent: "planner",
+              custom_instructions: ("Write the plan for proposal #" + $n + " as docs/plans/proposal-" + $n + "-<slug>.md. Change no other files.")
+            }}' > payload.json
+          GH_TOKEN="$COPILOT_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$ISSUE/assignees" --input payload.json --jq '.assignees[].login'

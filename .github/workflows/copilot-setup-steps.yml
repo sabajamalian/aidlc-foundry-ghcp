@@ -1,0 +1,35 @@
+# Prepares the ephemeral environment the Copilot coding agent works in, so the
+# planner and implementer can build, test, and run acceptance checks.
+# https://docs.github.com/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-environment
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+  push:
+    paths: [.github/workflows/copilot-setup-steps.yml]
+  pull_request:
+    paths: [.github/workflows/copilot-setup-steps.yml]
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            api/package-lock.json
+            frontend/package-lock.json
+      - name: Install API dependencies
+        run: npm ci
+        working-directory: api
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Seed a local database for acceptance checks
+        run: npm run db:seed:dev
+        working-directory: api

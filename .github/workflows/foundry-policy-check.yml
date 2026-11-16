@@ -1,0 +1,101 @@
+# Checks every PR against the team standards in .github/policies/team-standards.yml.
+# Mechanical rules are deterministic. Judgment rules go to the Foundry
+# Microsoft-Decision model, one bounded question per file, with line evidence.
+# The policy and checker come from the BASE commit; the PR diff is treated as data.
+# Exit codes: 0 pass, 1 blocking violation, 2 Decision unavailable (never reported as pass).
+name: Foundry policy check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write   # OIDC to Azure for the Decision deployment
+
+concurrency:
+  group: policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out the base commit (trusted policy and checker)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      - name: Fetch the PR diff as data
+        run: gh pr diff "$PR" -R "$GITHUB_REPOSITORY" > pr.diff
+
+      - name: Azure login (OIDC)
+        id: azlogin
+        if: vars.AZURE_CLIENT_ID != '' && vars.FOUNDRY_RESOURCE_ENDPOINT != ''
+        continue-on-error: true   # fork PRs get no OIDC token; the checker then reports "unavailable"
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run the policy check
+        id: check
+        env:
+          FOUNDRY_RESOURCE_ENDPOINT: ${{ vars.FOUNDRY_RESOURCE_ENDPOINT }}
+          FOUNDRY_DECISION_DEPLOYMENT: ${{ vars.FOUNDRY_DECISION_DEPLOYMENT }}
+          AZ_OK: ${{ steps.azlogin.outcome == 'success' }}
+        run: |
+          if [ "$AZ_OK" = "true" ]; then
+            FOUNDRY_DECISION_TOKEN=$(az account get-access-token --resource https://cognitiveservices.azure.com --query accessToken -o tsv)
+            echo "::add-mask::$FOUNDRY_DECISION_TOKEN"
+            export FOUNDRY_DECISION_TOKEN
+          fi
+          set +e
+          python -m sdlc.policy_check --policy .github/policies/team-standards.yml --diff pr.diff \
+            --json policy-report.json --markdown policy-report.md --base-sha "$BASE_SHA" --annotations
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat policy-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post or update the PR comment
+        if: always() && steps.check.outputs.code != ''
+        continue-on-error: true   # read-only token on fork PRs
+        run: |
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.body | contains("<!-- foundry-policy-check -->")) | .id' | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@policy-report.md >/dev/null
+          else
+            gh pr comment "$PR" -R "$GITHUB_REPOSITORY" --body-file policy-report.md
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: policy-report
+          path: policy-report.json
+          if-no-files-found: ignore
+
+      - name: Gate
+        env:
+          CODE: ${{ steps.check.outputs.code }}
+          UNAVAILABLE_FAILS: ${{ vars.POLICY_UNAVAILABLE_FAILS }}
+        run: |
+          case "$CODE" in
+            0) echo "Policy check passed." ;;
+            1) echo "::error::Blocking team-standard violations. See the PR comment."; exit 1 ;;
+            2) echo "::warning::Foundry Decision was unavailable, so judgment rules were NOT evaluated. This is not a pass."
+               [ "$UNAVAILABLE_FAILS" = "true" ] && exit 1 || exit 0 ;;
+            *) echo "::error::Checker crashed (exit $CODE)"; exit 1 ;;
+          esac

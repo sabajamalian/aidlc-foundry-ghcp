@@ -1,0 +1,121 @@
+# Stage 1: human direction -> Foundry discovery agent -> proposal issue for PM review.
+name: Foundry discovery
+
+on:
+  issues:
+    types: [labeled]   # issue forms that apply the label on creation also fire 'labeled'
+  workflow_dispatch:
+    inputs:
+      direction:
+        description: Product direction
+        required: true
+        default: Branches should be able to trust what they're charged for an order.
+      evidence:
+        description: Evidence pack under sdlc/evidence/
+        required: true
+        default: order-discounts
+      use_sample:
+        description: Rehearsal mode. Render the saved sample output instead of calling Foundry.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write   # OIDC to Azure for the Foundry Agent Service
+
+concurrency:
+  group: discovery-${{ github.event.issue.number || github.run_id }}
+
+jobs:
+  discover:
+    if: >-
+      github.event_name == 'workflow_dispatch' || github.event.label.name == 'direction'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SENDER: ${{ github.event.sender.login }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only maintainers can spend agent time
+        run: |
+          perm=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" --jq .permission)
+          case "$perm" in admin|maintain|write) echo "$SENDER has $perm";; *) echo "::error::$SENDER needs write access to start discovery"; exit 1;; esac
+
+      - name: Read direction and evidence pack
+        id: inputs
+        env:
+          IN_DIRECTION: ${{ inputs.direction }}
+          IN_EVIDENCE: ${{ inputs.evidence }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+          ev = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
+          issue = ev.get("issue")
+          if issue:
+              body = issue.get("body") or ""
+              def field(label):
+                  m = re.search(r"^### " + re.escape(label) + r"\s*\n+(.*?)(?=\n### |\Z)", body, re.S | re.M)
+                  return m.group(1).strip() if m else ""
+              direction, evidence, number = field("Direction"), field("Evidence pack"), str(issue["number"])
+          else:
+              direction, evidence, number = os.environ["IN_DIRECTION"], os.environ["IN_EVIDENCE"], ""
+          if not direction:
+              raise SystemExit("::error::Direction is empty")
+          if not re.fullmatch(r"[a-z0-9-]+", evidence or "") or not os.path.isdir(f"sdlc/evidence/{evidence}"):
+              raise SystemExit(f"::error::Unknown evidence pack {evidence!r}")
+          with open("direction.txt", "w") as f:
+              f.write(direction)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"evidence={evidence}\nissue={number}\n")
+          EOF
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r sdlc/requirements.txt
+
+      - name: Azure login (OIDC)
+        if: ${{ !inputs.use_sample }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run the Foundry discovery agent
+        env:
+          FOUNDRY_PROJECT_ENDPOINT: ${{ vars.FOUNDRY_PROJECT_ENDPOINT }}
+          FOUNDRY_MODEL_DEPLOYMENT: ${{ vars.FOUNDRY_MODEL_DEPLOYMENT }}
+          USE_SAMPLE: ${{ inputs.use_sample }}
+          EVIDENCE: ${{ steps.inputs.outputs.evidence }}
+          ISSUE: ${{ steps.inputs.outputs.issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(--evidence "sdlc/evidence/$EVIDENCE" --direction "$(cat direction.txt)"
+                --json proposal.json --markdown proposal.md --run-url "$RUN_URL")
+          [ -n "$ISSUE" ] && args+=(--direction-issue "$ISSUE")
+          if [ "$USE_SAMPLE" = "true" ]; then
+            args+=(--from-json docs/agentic-sdlc/sample-run/01-discovery-output.json)
+          fi
+          python -m sdlc.discovery "${args[@]}" | tee title.txt
+          if [ "$USE_SAMPLE" = "true" ]; then
+            printf '\n> **Rehearsal:** rendered from the saved sample output, not a live Foundry run.\n' >> proposal.md
+          fi
+
+      - name: Open the proposal issue for PM review
+        env:
+          ISSUE: ${{ steps.inputs.outputs.issue }}
+        run: |
+          url=$(gh issue create --title "Proposal: $(tail -n1 title.txt)" --body-file proposal.md \
+                --label proposal --label needs-pm-review)
+          echo "Proposal: $url" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body "The Foundry discovery agent drafted $url. A product manager reviews it next."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discovery-output
+          path: proposal.json

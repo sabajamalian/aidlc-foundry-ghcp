@@ -1,0 +1,9 @@
+ticket_id,opened,branch,category,summary,amount_variance_usd
+SUP-1041,2025-07-02,Meowtown Branch,billing,"SmartFeeder One billed 129.99/unit, catalog shows 25% off (97.49)",390.00
+SUP-1043,2025-07-03,Tabby Terrace Branch,billing,"AutoClean Litter Dome billed list price despite 25% catalog discount",200.00
+SUP-1047,2025-07-09,Meowtown Branch,billing,"WhiskerCam Pro discount (15%) missing on order lines",67.50
+SUP-1052,2025-07-15,Tabby Terrace Branch,reporting,"No order total in order API response; Swagger shows totalAmount",
+SUP-1055,2025-07-18,Meowtown Branch,billing,"Unit price on order line typed manually, does not match catalog",
+SUP-1058,2025-07-22,Tabby Terrace Branch,billing,"SmartFeeder One reorder billed at list price again",195.00
+SUP-1061,2025-07-28,Meowtown Branch,reporting,"Finance cannot reconcile order totals with invoices",
+SUP-1064,2025-08-01,Tabby Terrace Branch,ux,"Requested dark mode for the order screen",

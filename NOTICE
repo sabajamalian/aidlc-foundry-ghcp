@@ -1,0 +1,10 @@
+This repository includes the OctoCAT Supply sample application from
+https://github.com/Azure-Samples/octocat-supply at commit 65299c9, used as the
+brownfield baseline for this demo. It lives in api/, frontend/, infra/,
+.devcontainer/, docs/architecture.md, docs/build.md, docs/deployment.md,
+docs/sqlite-integration.md, and .github/instructions/{api,database,frontend}.instructions.md.
+
+That code is licensed under the MIT License (see api/package.json) by its
+original authors. Changes made here: api/package-lock.json was regenerated, the
+instruction files' applyTo globs were corrected, and some upstream files
+(demo scripts, design docs, workflows, a sample private key) were not copied.

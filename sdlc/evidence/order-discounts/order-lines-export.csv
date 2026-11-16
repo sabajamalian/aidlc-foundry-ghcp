@@ -1,0 +1,6 @@
+order_id,branch,product_id,product_name,quantity,catalog_price,catalog_discount,expected_unit_price,billed_unit_price,variance_usd
+9001,Meowtown Branch,1,SmartFeeder One,12,129.99,0.25,97.49,129.99,390.00
+9002,Tabby Terrace Branch,2,AutoClean Litter Dome,4,199.99,0.25,149.99,199.99,200.00
+9003,Meowtown Branch,5,WhiskerCam Pro,3,149.99,0.15,127.49,149.99,67.50
+9004,Tabby Terrace Branch,3,CatFlix Entertainment Portal,10,89.99,0.00,89.99,89.99,0.00
+9005,Tabby Terrace Branch,1,SmartFeeder One,6,129.99,0.25,97.49,129.99,195.00

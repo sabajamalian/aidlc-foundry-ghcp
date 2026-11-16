@@ -1,0 +1,127 @@
+# Closes the loop on Copilot-authored PRs: when CI or the Foundry policy check fails,
+# or Copilot code review leaves comments, send the findings back to the Copilot coding
+# agent. Bounded by REPAIR_MAX_ATTEMPTS (default 3); after that a human is pulled in.
+# Never checks out or runs PR code. Findings are passed to the agent as text only.
+name: Agent repair loop
+
+on:
+  workflow_run:
+    workflows: ["CI", "Foundry policy check"]
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  repair:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'pull_request_review' &&
+       github.event.review.user.login == 'copilot-pull-request-reviewer[bot]')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: repair-${{ github.event.pull_request.number || github.event.workflow_run.head_branch }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MAX: ${{ vars.REPAIR_MAX_ATTEMPTS || '3' }}
+    steps:
+      - name: Resolve the PR
+        id: pr
+        env:
+          EVENT: ${{ github.event_name }}
+          REVIEW_PR: ${{ github.event.pull_request.number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ "$EVENT" = "pull_request_review" ]; then
+            n="$REVIEW_PR"
+          else
+            n=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$RUN_BRANCH" --state open --json number,headRefOid \
+                  --jq ".[] | select(.headRefOid == \"$RUN_SHA\") | .number" | head -n1)
+          fi
+          [ -n "$n" ] || { echo "No open PR at this commit (stale run or fork). Skipping."; exit 0; }
+          author=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n" --jq .user.login)
+          case "$author" in
+            Copilot|copilot-swe-agent|copilot-swe-agent\[bot\]) ;;
+            *) echo "PR #$n is by $author, not the Copilot coding agent. Skipping."; exit 0 ;;
+          esac
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+
+      - name: Collect findings
+        if: steps.pr.outputs.number != ''
+        id: findings
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          REVIEW_URL: ${{ github.event.review.html_url }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          N: ${{ steps.pr.outputs.number }}
+        run: |
+          if [ "$EVENT" = "pull_request_review" ]; then
+            count=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$N/reviews/$REVIEW_ID/comments" --jq length)
+            if [ "$count" = "0" ] && [ -z "$REVIEW_BODY" ]; then echo "Review has no findings."; exit 0; fi
+            {
+              echo "Copilot code review left $count comment(s): $REVIEW_URL"
+              echo
+              gh api "repos/$GITHUB_REPOSITORY/pulls/$N/reviews/$REVIEW_ID/comments" \
+                --jq '.[] | "- `\(.path):\(.line // .original_line)`: \(.body | split("\n")[0])"' | head -n 30
+            } > findings.md
+          elif [ "$RUN_NAME" = "Foundry policy check" ]; then
+            report=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$N/comments" \
+              --jq '.[] | select(.body | contains("<!-- foundry-policy-check -->")) | .body')
+            if ! grep -q "FAIL: blocking policy violations" <<<"$report"; then
+              echo "Policy check did not report violations (likely Decision unavailable). Not an agent problem."; exit 0
+            fi
+            {
+              echo "The Foundry policy check found blocking violations: $RUN_URL"
+              echo
+              tail -n 60 <<<"$report"
+            } > findings.md
+          else
+            {
+              echo "$RUN_NAME failed: $RUN_URL"
+              echo
+              echo '```text'
+              gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed | cut -c1-300 | tail -n 60
+              echo '```'
+            } > findings.md
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Ask Copilot to fix, or escalate
+        if: steps.findings.outputs.ready == 'true'
+        env:
+          N: ${{ steps.pr.outputs.number }}
+          COPILOT_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        run: |
+          attempts=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$N/comments" \
+            --jq '[.[] | select(.body | contains("<!-- agent-repair -->"))] | length' | jq -s add)
+          if [ "${attempts:-0}" -ge "$MAX" ]; then
+            gh pr edit "$N" -R "$GITHUB_REPOSITORY" --add-label needs-human
+            gh pr comment "$N" -R "$GITHUB_REPOSITORY" --body "The agent used all $MAX repair attempts and the PR still has findings. A human needs to take it from here.
+
+          $(cat findings.md)"
+            exit 0
+          fi
+          if [ -z "$COPILOT_TOKEN" ]; then
+            echo "::warning::COPILOT_ASSIGN_TOKEN is not set; @copilot mentions must come from a user with write access."
+            exit 0
+          fi
+          next=$((attempts + 1))
+          {
+            echo "<!-- agent-repair -->"
+            echo "@copilot Repair attempt $next of $MAX. Fix the findings below without changing the approved plan, the policy file, or workflows. If a finding is wrong, explain why in a reply instead of working around it."
+            echo
+            cat findings.md
+          } > comment.md
+          GH_TOKEN="$COPILOT_TOKEN" gh pr comment "$N" -R "$GITHUB_REPOSITORY" --body-file comment.md
+          gh pr edit "$N" -R "$GITHUB_REPOSITORY" --add-label agent-repair

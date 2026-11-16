@@ -1,0 +1,26 @@
+name: Direction
+description: Set a product direction. The Foundry discovery agent turns it and an evidence pack into a proposal for PM review.
+title: "Direction: "
+labels: [direction]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Humans set the direction. When you submit this, the **Foundry discovery agent** reads the evidence pack you pick and opens a **proposal** issue for a product manager to review and approve.
+  - type: textarea
+    id: direction
+    attributes:
+      label: Direction
+      description: The outcome you want, in a sentence or two. Don't prescribe the solution.
+      placeholder: Branches should be able to trust what they're charged for an order.
+    validations:
+      required: true
+  - type: dropdown
+    id: evidence
+    attributes:
+      label: Evidence pack
+      description: Folder under sdlc/evidence/ the agent should analyze.
+      options:
+        - order-discounts
+    validations:
+      required: true
