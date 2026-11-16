@@ -3,9 +3,11 @@
  */
 
 import { getDatabase, DatabaseConnection } from '../db/sqlite';
-import { OrderDetail } from '../models/orderDetail';
-import { handleDatabaseError, NotFoundError } from '../utils/errors';
+import { OrderDetail, OrderDetailInput } from '../models/orderDetail';
+import { handleDatabaseError, NotFoundError, ValidationError } from '../utils/errors';
 import { buildInsertSQL, buildUpdateSQL, objectToCamelCase, mapDatabaseRows, DatabaseRow } from '../utils/sql';
+import { discountedUnitPrice, orderTotal } from '../utils/pricing';
+import { ProductsRepository } from './productsRepo';
 
 export class OrderDetailsRepository {
   private db: DatabaseConnection;
@@ -43,9 +45,18 @@ export class OrderDetailsRepository {
   /**
    * Create a new order detail
    */
-  async create(orderDetail: Omit<OrderDetail, 'orderDetailId'>): Promise<OrderDetail> {
+  async create(orderDetail: OrderDetailInput): Promise<OrderDetail> {
     try {
-      const { sql, values } = buildInsertSQL('order_details', orderDetail);
+      this.validateInput(orderDetail);
+      this.validateQuantity(orderDetail.quantity);
+      const unitPrice = await this.catalogPrice(orderDetail.productId);
+      const { sql, values } = buildInsertSQL('order_details', {
+        orderId: orderDetail.orderId,
+        productId: orderDetail.productId,
+        quantity: orderDetail.quantity,
+        unitPrice,
+        notes: orderDetail.notes ?? '',
+      });
       const result = await this.db.run(sql, values);
 
       const createdOrderDetail = await this.findById(result.lastID || 0);
@@ -64,10 +75,27 @@ export class OrderDetailsRepository {
    */
   async update(
     id: number,
-    orderDetail: Partial<Omit<OrderDetail, 'orderDetailId'>>,
+    orderDetail: Partial<OrderDetailInput>,
   ): Promise<OrderDetail> {
     try {
-      const { sql, values } = buildUpdateSQL('order_details', orderDetail, 'order_detail_id = ?');
+      this.validateInput(orderDetail);
+      const existing = await this.findById(id);
+      if (!existing) {
+        throw new NotFoundError('OrderDetail', id);
+      }
+      if (orderDetail.quantity !== undefined) {
+        this.validateQuantity(orderDetail.quantity);
+      }
+      const fields: Record<string, unknown> = {};
+      for (const key of ['orderId', 'quantity', 'notes'] as const) {
+        if (orderDetail[key] !== undefined) fields[key] = orderDetail[key];
+      }
+      if (orderDetail.productId !== undefined && orderDetail.productId !== existing.productId) {
+        fields.unitPrice = await this.catalogPrice(orderDetail.productId);
+        fields.productId = orderDetail.productId;
+      }
+      if (Object.keys(fields).length === 0) return existing;
+      const { sql, values } = buildUpdateSQL('order_details', fields, 'order_detail_id = ?');
       const result = await this.db.run(sql, [...values, id]);
 
       if (result.changes === 0) {
@@ -83,6 +111,27 @@ export class OrderDetailsRepository {
     } catch (error) {
       handleDatabaseError(error, 'OrderDetail', id);
     }
+  }
+
+  private validateInput(input: unknown): void {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new ValidationError('Order detail must be an object');
+    }
+  }
+
+  private validateQuantity(quantity: number): void {
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      throw new ValidationError('Quantity must be a positive integer');
+    }
+  }
+
+  private async catalogPrice(productId: number): Promise<number> {
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      throw new ValidationError('Product ID must be a positive integer');
+    }
+    const product = await new ProductsRepository(this.db).findById(productId);
+    if (!product) throw new NotFoundError('Product', productId);
+    return discountedUnitPrice(product.price, product.discount);
   }
 
   /**
@@ -150,11 +199,7 @@ export class OrderDetailsRepository {
    */
   async getTotalValueByOrderId(orderId: number): Promise<number> {
     try {
-      const result = await this.db.get<{ total: number }>(
-        'SELECT SUM(quantity * unit_price) as total FROM order_details WHERE order_id = ?',
-        [orderId],
-      );
-      return result?.total || 0;
+      return orderTotal(await this.findByOrderId(orderId));
     } catch (error) {
       handleDatabaseError(error);
     }
@@ -175,6 +220,10 @@ let orderDetailsRepo: OrderDetailsRepository | null = null;
 export async function getOrderDetailsRepository(
   isTest: boolean = false,
 ): Promise<OrderDetailsRepository> {
+  const isTestEnv = isTest || process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  if (isTestEnv) {
+    return createOrderDetailsRepository(true);
+  }
   if (!orderDetailsRepo) {
     orderDetailsRepo = await createOrderDetailsRepository(isTest);
   }

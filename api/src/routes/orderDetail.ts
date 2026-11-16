@@ -28,7 +28,7 @@
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/OrderDetail'
+ *             $ref: '#/components/schemas/OrderDetailInput'
  *     responses:
  *       201:
  *         description: Order detail created successfully
@@ -36,6 +36,10 @@
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/OrderDetail'
+ *       400:
+ *         description: Quantity must be a positive integer and productId must be valid
+ *       404:
+ *         description: Product not found
  *
  * /api/order-details/{id}:
  *   get:
@@ -72,7 +76,7 @@
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/OrderDetail'
+ *             $ref: '#/components/schemas/OrderDetailUpdate'
  *     responses:
  *       200:
  *         description: Order detail updated successfully
@@ -81,7 +85,9 @@
  *             schema:
  *               $ref: '#/components/schemas/OrderDetail'
  *       404:
- *         description: Order detail not found
+ *         description: Order detail or replacement product not found
+ *       400:
+ *         description: Quantity must be a positive integer and productId must be valid
  *   delete:
  *     summary: Delete an order detail
  *     tags: [Order Details]
@@ -100,7 +106,7 @@
  */
 
 import express from 'express';
-import { OrderDetail } from '../models/orderDetail';
+import { OrderDetailInput } from '../models/orderDetail';
 import { getOrderDetailsRepository } from '../repositories/orderDetailsRepo';
 import { NotFoundError } from '../utils/errors';
 
@@ -110,7 +116,7 @@ const router = express.Router();
 router.post('/', async (req, res, next) => {
   try {
     const repo = await getOrderDetailsRepository();
-    const newOrderDetail = await repo.create(req.body as Omit<OrderDetail, 'orderDetailId'>);
+    const newOrderDetail = await repo.create(req.body as OrderDetailInput);
     res.status(201).json(newOrderDetail);
   } catch (error) {
     next(error);
@@ -150,11 +156,7 @@ router.put('/:id', async (req, res, next) => {
     const updatedOrderDetail = await repo.update(parseInt(req.params.id), req.body);
     res.json(updatedOrderDetail);
   } catch (error) {
-    if (error instanceof NotFoundError) {
-      res.status(404).send('Order detail not found');
-    } else {
-      next(error);
-    }
+    next(error);
   }
 });
 

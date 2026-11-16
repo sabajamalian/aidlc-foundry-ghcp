@@ -219,7 +219,7 @@ export const branches: Branch[] = [
 ];
 
 // Orders
-export const orders: Order[] = [
+export const orders: Omit<Order, 'totalAmount'>[] = [
   {
     orderId: 1,
     branchId: 1,
